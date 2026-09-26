@@ -1,5 +1,42 @@
 # Votação
 
+## Como executar
+****
+### Pré-requisitos
+
+- Docker e Docker Compose.
+
+```bash
+docker compose up --build
+```
+
+### Localmente, sem Docker Compose
+
+1. Suba um Postgres com as credenciais esperadas (usuário, senha e banco `votacao`):
+   ```bash
+   docker run --name votacao-db -e POSTGRES_USER=votacao -e POSTGRES_PASSWORD=votacao -e POSTGRES_DB=votacao -p 5432:5432 -d postgres:16
+   ```
+2. Rode a aplicação (o Maven Wrapper já está no repositório, não precisa instalar Maven):
+   ```bash
+   ./mvnw spring-boot:run
+   ```
+   No Windows (PowerShell/cmd): `.\mvnw.cmd spring-boot:run`.
+
+A aplicação usa por padrão usuário/senha `votacao`/`votacao` (sobrescrevíveis pelas variáveis de ambiente `DB_USER`/`DB_PASSWORD`) e espera o Postgres em `localhost:5432` — ajuste `spring.datasource.url` em `src/main/resources/application.properties` se o seu banco estiver em outro host/porta.
+
+### Rodando os testes
+
+```bash
+./mvnw test
+```
+
+Os testes de integração e de concorrência usam [Testcontainers](https://testcontainers.com/) — sobem um Postgres real em container automaticamente durante a execução, então **é necessário ter o Docker rodando** para esses dois (os testes unitários dos services não precisam).
+
+Cobertura da suíte:
+- `PautaServiceTest`, `SessaoServiceTest`, `VotoServiceTest` — unitários (Mockito), cobrindo as regras de negócio de cada service isoladamente.
+- `VotacaoIntegrationTest` — sobe a aplicação completa + Postgres real (Testcontainers) e exercita o fluxo via HTTP: cadastrar pauta, abrir sessão, votar, resultado, e voto duplicado.
+- `VotoConcorrenciaTest` (bônus 2) — dispara 20 threads votando simultaneamente com o mesmo `associadoId` na mesma sessão, confirmando que só 1 voto é persistido (prova a constraint única do banco sob concorrência real).
+
 ## Objetivo
 
 No cooperativismo, cada associado possui um voto e as decisões são tomadas em assembleias, por votação. Imagine que você deve criar uma solução we para gerenciar e participar dessas sessões de votação.
@@ -70,6 +107,55 @@ Exemplos de retorno do serviço
 - Mensagens e organização dos commits
 - Testes
 - Layout responsivo
+
+## Decisões de arquitetura
+
+- **Versionamento de API (bônus 3)**: por URI (`/api/v1/...`). É a estratégia mais simples de implementar e a mais visível pra quem testa (Postman/curl).
+- **Concorrência e performance (bônus 2)**: a garantia de "um voto por associado por sessão" não depende só da checagem em código — existe uma constraint única composta no banco (`sessao_id`, `associado_id`), que é quem garante a integridade de fato sob concorrência (dois requests simultâneos podem passar pela checagem em Java ao mesmo tempo; só o banco impede a dupla escrita). A contagem de votos usa uma query agregada (`GROUP BY`) no banco, não uma contagem em memória — importante para o cenário de centenas de milhares de votos citado no desafio.
+- **Sessão aberta/fechada**: calculado comparando o relógio atual com o horário de fechamento (`SessaoVotacao.isAberta()`), nunca um campo booleano persistido — um flag salvo ficaria desatualizado assim que o tempo passasse, exigindo um job para "fechar" a sessão.
+
+## Documentação da API
+
+Todos os endpoints estão sob o prefixo `/api/v1`.
+
+### Pautas
+
+| Método | Rota | Corpo (request) | Resposta |
+|---|---|---|---|
+| `POST` | `/api/v1/pautas` | `{"titulo": "string", "descricao": "string"}` | `201`/`200` com `PautaResponse` |
+| `GET` | `/api/v1/pautas/{id}` | — | `200` com `PautaResponse`, ou `404` se não existir |
+
+### Sessões
+
+| Método | Rota | Corpo (request) | Resposta |
+|---|---|---|---|
+| `POST` | `/api/v1/sessoes/{pautaId}/create/{duracao}` | — (`duracao` em minutos, na própria URL) | `200` com `SessaoResponse`, `404` se a pauta não existir, `409` se a pauta já tiver sessão |
+
+### Votos
+
+| Método | Rota | Corpo (request) | Resposta |
+|---|---|---|---|
+| `POST` | `/api/v1/sessoes/{sessaoId}/votos` | `{"associadoId": "CPF", "opcao": "SIM"\|"NAO"}` | `201` sem corpo; `404` se sessão/CPF inválido, `403` se `UNABLE_TO_VOTE`, `409` se sessão encerrada ou voto duplicado |
+
+### Resultado
+
+| Método | Rota | Corpo (request) | Resposta |
+|---|---|---|---|
+| `GET` | `/api/v1/pautas/{pautaId}/resultado` | — | `200` com `ResultadoResponse` (`totalSim`, `totalNao`, `resultado`: `APROVADA`/`REJEITADA`/`EMPATE`) |
+
+### Erros
+
+Erros de negócio retornam um corpo simples (`string`) e o status HTTP correspondente, tratados centralmente em `GlobalExceptionHandler`:
+
+| Exceção | Status |
+|---|---|
+| `PautaNotFoundException` | 404 |
+| `SessaoNotFoundException` | 404 |
+| `CpfInvalidoException` | 404 |
+| `SessaoJaExisteException` | 409 |
+| `SessaoEncerradaException` | 409 |
+| `VotoDuplicadoException` | 409 |
+| `AssociadoNaoAptoException` | 403 |
 
 ## Dicas
 

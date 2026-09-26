@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: votacao
+      POSTGRES_PASSWORD: votacao
+      POSTGRES_DB: votacao
+    ports:
+      - "5432:5432"
+    volumes:
+      - votacao-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U votacao -d votacao"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/votacao
+      DB_USER: votacao
+      DB_PASSWORD: votacao
+    ports:
+      - "8080:8080"
+
+volumes:
+  votacao-db-data:
